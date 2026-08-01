@@ -1,8 +1,9 @@
-fastapi
+ffastapi
 uvicorn
 opencv-python-headless
 numpy
 python-multipart
-vtracer
 ezdxf
 pillow
+google-genai
+
