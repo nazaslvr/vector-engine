@@ -1,8 +1,7 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import numpy as np
 import cv2
-import vtracer
 import ezdxf
 import base64
 import os
@@ -13,8 +12,9 @@ app = FastAPI()
 def read_root():
     return {"status": "AI Laser Vector Engine API Running"}
 
-@app.post("/process-design/")
-async def process_design(file: UploadFile = File(...)):
+# STEP 1: Process raw photo into clean Black & White preview JPEG
+@app.post("/generate-preview/")
+async def generate_preview(file: UploadFile = File(...)):
     contents = await file.read()
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -22,25 +22,43 @@ async def process_design(file: UploadFile = File(...)):
     if img is None:
         return JSONResponse(status_code=400, content={"error": "Invalid image format"})
 
-    # 1. Convert to high-contrast B&W image
+    # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Apply bilateral filter to smooth noise while keeping clean design edges
+    blurred = cv2.bilateralFilter(gray, 9, 75, 75)
+
+    # Adaptive thresholding to extract high-contrast black & white pattern
     bw_img = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 11, 2
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY_INV, 15, 3
     )
 
-    temp_bw_path = "/tmp/bw_preview.jpg"
-    cv2.imwrite(temp_bw_path, bw_img)
-
-    # Encode B&W JPEG to Base64
+    # Encode to Base64 JPEG for app preview
     _, encoded_jpeg = cv2.imencode('.jpg', bw_img)
     jpeg_base64 = base64.b64encode(encoded_jpeg).decode('utf-8')
 
-    # 2. Vectorize contours to DXF format
+    return {
+        "bw_image_jpeg_base64": f"data:image/jpeg;base64,{jpeg_base64}"
+    }
+
+# STEP 2: Convert confirmed/edited B&W preview into DXF vector file
+@app.post("/generate-dxf/")
+async def generate_dxf(file: UploadFile = File(...)):
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    bw_img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+
+    if bw_img is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image format"})
+
+    # Extract clean vector contours
+    contours, _ = cv2.findContours(bw_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Create DXF CAD file
     doc = ezdxf.new('R2010')
     msp = doc.modelspace()
 
-    contours, _ = cv2.findContours(bw_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
         points = [(float(pt[0][0]), float(pt[0][1])) for pt in contour]
         if len(points) > 2:
@@ -52,16 +70,11 @@ async def process_design(file: UploadFile = File(...)):
     with open(temp_dxf_path, "rb") as f:
         dxf_bytes = f.read()
 
-    dxf_base64 = base64.b64encode(dxf_bytes).decode('utf-8')
+    if os.path.exists(temp_dxf_path):
+        os.remove(temp_dxf_path)
 
-    # Clean up
-    for path in [temp_bw_path, temp_dxf_path]:
-        if os.path.exists(path):
-            os.remove(path)
-
-    # Return both B&W preview and DXF payload
-    return {
-        "bw_image_jpeg_base64": f"data:image/jpeg;base64,{jpeg_base64}",
-        "dxf_file_base64": dxf_base64
-    }
-
+    return Response(
+        content=dxf_bytes, 
+        media_type="application/dxf", 
+        headers={"Content-Disposition": "attachment; filename=design.dxf"}
+    )
