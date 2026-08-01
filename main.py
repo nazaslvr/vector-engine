@@ -70,7 +70,9 @@ def read_root():
 
 
 @app.post("/generate_preview")
+@app.post("/generate_preview/")
 async def generate_preview(file: UploadFile = File(...)):
+
     if not REPLICATE_API_TOKEN:
         raise HTTPException(status_code=500, detail="REPLICATE_API_TOKEN is missing")
 
