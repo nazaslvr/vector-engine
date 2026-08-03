@@ -14,8 +14,10 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 HF_API_URL = "https://api-inference.huggingface.co/models/lllyasviel/sd-controlnet-canny"
 
 AI_PROMPT = (
-    "flat clean black vector outline pattern, pure white background, high contrast, "
-    "sharp edges, cnc cutting template, 2d design, connected black lines, identical pattern"
+    "Look at this image, find the artwork in it, isolate it, make it flat on the screen, "
+    "paint it all black and the background all white, this is for cnc cutting so all black lines "
+    "must be connected, distinct, clear and broad enough. The result must be identical to the "
+    "design in the image, do not restyle, simplify, or edit the design"
 )
 
 
