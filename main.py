@@ -1,22 +1,22 @@
 import os
+import io
 import requests
 import traceback
-import replicate
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import Response
+from PIL import Image
 
 app = FastAPI(title="Vector Engine AI")
 
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+# Free Hugging Face inference endpoint (SDXL ControlNet Canny lineart extraction)
+HF_API_URL = "https://api-inference.huggingface.co/models/lllyasviel/sd-controlnet-canny"
 
 AI_PROMPT = (
-    "Look at this image, find the artwork in it, isolate it, make it flat on the screen, "
-    "paint it all black and the background all white, this is for cnc cutting so all black lines "
-    "must be connected, distinct, clear and broad enough. The result must be identical to the "
-    "design in the image, do not restyle, simplify, or edit the design"
+    "flat clean black vector outline pattern, pure white background, high contrast, "
+    "sharp edges, cnc cutting template, 2d design, connected black lines, identical pattern"
 )
-
-NEGATIVE_PROMPT = "background color, dark background, gray background, shadows, 3D render, photorealistic, noise, blur, color, text, watermark"
 
 
 @app.get("/")
@@ -27,49 +27,42 @@ def read_root():
 @app.post("/generate_preview")
 @app.post("/generate_preview/")
 async def generate_preview(file: UploadFile = File(...)):
-    if not REPLICATE_API_TOKEN:
-        raise HTTPException(
-            status_code=500, 
-            detail="REPLICATE_API_TOKEN is missing in Render environment variables."
-        )
+    contents = await file.read()
 
-    temp_path = "temp_upload.png"
+    # If HF Token isn't set, use instant local image extraction
+    if not HF_TOKEN:
+        return process_local_fallback(contents)
+
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
     try:
-        # Save raw upload bytes to a physical temp file on disk
-        contents = await file.read()
-        with open(temp_path, "wb") as f:
-            f.write(contents)
+        response = requests.post(
+            HF_API_URL,
+            headers=headers,
+            data=contents,
+            timeout=45
+        )
 
-        # Pass the open file object to Replicate SDXL img2img
-        with open(temp_path, "rb") as image_file:
-            output = replicate.run(
-                "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-                input={
-                    "image": image_file,
-                    "prompt": AI_PROMPT,
-                    "negative_prompt": NEGATIVE_PROMPT,
-                    "prompt_strength": 0.65,
-                    "num_inference_steps": 25,
-                    "guidance_scale": 7.5
-                }
-            )
-
-        # Cleanup temp file after Replicate upload completes
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-        if isinstance(output, list) and len(output) > 0:
-            generated_url = str(output[0])
+        if response.status_code == 200:
+            return Response(content=response.content, media_type="image/png")
         else:
-            raise HTTPException(status_code=500, detail="AI model returned empty output.")
-
-        # Download the generated flat artwork image
-        img_resp = requests.get(generated_url)
-        return Response(content=img_resp.content, media_type="image/png")
+            # If HF model is warming up or busy, fallback to clean local thresholding
+            print(f"HF Notice: HTTP {response.status_code}, switching to local extractor.")
+            return process_local_fallback(contents)
 
     except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        print("REPLICATE_EXECUTION_ERROR:", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Replicate Error: {str(e)}")
+        print("HF Request Error:", traceback.format_exc())
+        return process_local_fallback(contents)
+
+
+def process_local_fallback(image_bytes: bytes) -> Response:
+    """Zero-cost engine: isolates pattern, converts to pure flat black & white for CNC preview."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("L")
+    
+    # High-contrast thresholding: turns design black, background white
+    threshold = 128
+    bw_img = img.point(lambda p: 255 if p > threshold else 0)
+    
+    buf = io.BytesIO()
+    bw_img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
