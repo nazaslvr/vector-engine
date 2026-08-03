@@ -121,24 +121,3 @@ async def generate_preview(file: UploadFile = File(...)):
 
     _, encoded = cv2.imencode(".png", warped)
     return Response(content=encoded.tobytes(), media_type="image/png")
-
-    # Step 2: Fallback OpenCV Processing (Black lines on clean White canvas)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.bilateralFilter(gray, 9, 75, 75)
-    
-    # THRESH_BINARY ensures white background (255) and black drawing lines (0)
-    bw_img = cv2.adaptiveThreshold(
-        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5
-    )
-    
-    # Inverted mask strictly for finding bounding box contours
-    inv_mask = cv2.bitwise_not(bw_img)
-    warped = perspective_warp(bw_img, inv_mask)
-
-    _, encoded = cv2.imencode(".png", warped)
-    return Response(content=encoded.tobytes(), media_type="image/png")
-        _, encoded = cv2.imencode(".png", warped)
-        return Response(content=encoded.tobytes(), media_type="image/png")
-
-    _, encoded = cv2.imencode(".png", img)
-    return Response(content=encoded.tobytes(), media_type="image/png")
