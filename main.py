@@ -1,6 +1,6 @@
 import os
-import io
 import requests
+import traceback
 import replicate
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import Response
@@ -33,33 +33,43 @@ async def generate_preview(file: UploadFile = File(...)):
             detail="REPLICATE_API_TOKEN is missing in Render environment variables."
         )
 
-    contents = await file.read()
+    temp_path = "temp_upload.png"
 
     try:
-        # Pass file bytes stream to SDXL img2img model with full version reference
-        image_stream = io.BytesIO(contents)
-        
-        output = replicate.run(
-            "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
-            input={
-                "image": image_stream,
-                "prompt": AI_PROMPT,
-                "negative_prompt": NEGATIVE_PROMPT,
-                "prompt_strength": 0.65,
-                "num_inference_steps": 25,
-                "guidance_scale": 7.5
-            }
-        )
+        # Save raw upload bytes to a physical temp file on disk
+        contents = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(contents)
+
+        # Pass the open file object to Replicate SDXL img2img
+        with open(temp_path, "rb") as image_file:
+            output = replicate.run(
+                "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+                input={
+                    "image": image_file,
+                    "prompt": AI_PROMPT,
+                    "negative_prompt": NEGATIVE_PROMPT,
+                    "prompt_strength": 0.65,
+                    "num_inference_steps": 25,
+                    "guidance_scale": 7.5
+                }
+            )
+
+        # Cleanup temp file after Replicate upload completes
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
         if isinstance(output, list) and len(output) > 0:
             generated_url = str(output[0])
         else:
             raise HTTPException(status_code=500, detail="AI model returned empty output.")
 
+        # Download the generated flat artwork image
         img_resp = requests.get(generated_url)
         return Response(content=img_resp.content, media_type="image/png")
 
     except Exception as e:
-        # Return exact exception string so Toast shows the exact API reason
-        err_msg = str(e).replace('"', "'")
-        raise HTTPException(status_code=500, detail=f"Replicate Error: {err_msg}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        print("REPLICATE_EXECUTION_ERROR:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Replicate Error: {str(e)}")
