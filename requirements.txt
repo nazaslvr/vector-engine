@@ -6,3 +6,4 @@ requests
 replicate
 pillow
 python-multipart
+fal-client
