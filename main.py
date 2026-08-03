@@ -1,5 +1,5 @@
 import os
-import base64
+import io
 import requests
 import replicate
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -9,7 +9,6 @@ app = FastAPI(title="Vector Engine AI")
 
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
-# Strict CNC design prompt
 AI_PROMPT = (
     "Look at this image, find the artwork in it, isolate it, make it flat on the screen, "
     "paint it all black and the background all white, this is for cnc cutting so all black lines "
@@ -37,15 +36,14 @@ async def generate_preview(file: UploadFile = File(...)):
     contents = await file.read()
 
     try:
-        # Convert raw image bytes to Base64 Data URI for Replicate API
-        base64_encoded = base64.b64encode(contents).decode("utf-8")
-        data_uri = f"data:image/png;base64,{base64_encoded}"
+        # Wrap raw bytes as a file-like object for Replicate file upload
+        image_file = io.BytesIO(contents)
 
-        # Run SDXL image-to-image synthesis using the Data URI
+        # Run SDXL image-to-image synthesis using stable model reference
         output = replicate.run(
-            "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+            "stability-ai/sdxl",
             input={
-                "image": data_uri,
+                "image": image_file,
                 "prompt": AI_PROMPT,
                 "negative_prompt": NEGATIVE_PROMPT,
                 "prompt_strength": 0.65,
@@ -60,7 +58,7 @@ async def generate_preview(file: UploadFile = File(...)):
         else:
             raise HTTPException(status_code=500, detail="AI model did not return an image.")
 
-        # Download the AI generated flat artwork and return to Android
+        # Download the AI generated flat artwork and return bytes
         img_resp = requests.get(generated_url)
         return Response(content=img_resp.content, media_type="image/png")
 
