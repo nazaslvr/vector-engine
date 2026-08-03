@@ -3,6 +3,7 @@ import io
 import cv2
 import numpy as np
 import replicate
+import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import Response
 from PIL import Image
@@ -72,39 +73,54 @@ def read_root():
 @app.post("/generate_preview")
 @app.post("/generate_preview/")
 async def generate_preview(file: UploadFile = File(...)):
-
-    if not REPLICATE_API_TOKEN:
-        raise HTTPException(status_code=500, detail="REPLICATE_API_TOKEN is missing")
-
     contents = await file.read()
-
-    # Step 1: Call SAM 2 for background removal & segmentation
-    try:
-        output = replicate.run(
-            "meta/sam-2-realtime:1e29e925c04b4081c70e2f5ffed5c8b58a1f8db112bf8f3f88f8d689b0d625d8",
-            input={"image": io.BytesIO(contents)}
-        )
-    except Exception as e:
-        # Fallback to OpenCV classical processing if API rate limit occurs
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.bilateralFilter(gray, 9, 75, 75)
-        bw_img = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 3)
-        _, encoded = cv2.imencode(".png", bw_img)
-        return Response(content=encoded.tobytes(), media_type="image/png")
-
-    # Decode uploaded original image
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    # Step 2: Read segmented mask returned by API
-    if isinstance(output, list) and len(output) > 0:
-        mask_url = output[0]
-        # Warp & rectify geometry based on mask
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        bw_img = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 3)
-        warped = perspective_warp(bw_img, gray)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Invalid image uploaded")
+
+    # Step 1: Attempt SAM 2 Cloud Segmentation if token exists
+    if REPLICATE_API_TOKEN:
+        try:
+            output = replicate.run(
+                "meta/sam-2-realtime:1e29e925c04b4081c70e2f5ffed5c8b58a1f8db112bf8f3f88f8d689b0d625d8",
+                input={"image": io.BytesIO(contents)}
+            )
+            if isinstance(output, list) and len(output) > 0:
+                mask_url = output[0]
+                mask_resp = requests.get(mask_url)
+                mask_arr = np.frombuffer(mask_resp.content, np.uint8)
+                mask_img = cv2.imdecode(mask_arr, cv2.IMREAD_GRAYSCALE)
+
+                # Process original image to B&W line art (black lines on white background)
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                bw_img = cv2.adaptiveThreshold(
+                    gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5
+                )
+
+                # Crop and warp based on SAM 2 mask
+                warped = perspective_warp(bw_img, mask_img)
+                _, encoded = cv2.imencode(".png", warped)
+                return Response(content=encoded.tobytes(), media_type="image/png")
+        except Exception:
+            pass  # Fallback smoothly to OpenCV classical processing
+
+    # Step 2: Fallback OpenCV Processing (Black lines on clean White canvas)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.bilateralFilter(gray, 9, 75, 75)
+    
+    # THRESH_BINARY ensures white background (255) and black drawing lines (0)
+    bw_img = cv2.adaptiveThreshold(
+        blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 5
+    )
+    
+    # Inverted mask strictly for finding bounding box contours
+    inv_mask = cv2.bitwise_not(bw_img)
+    warped = perspective_warp(bw_img, inv_mask)
+
+    _, encoded = cv2.imencode(".png", warped)
+    return Response(content=encoded.tobytes(), media_type="image/png")
         _, encoded = cv2.imencode(".png", warped)
         return Response(content=encoded.tobytes(), media_type="image/png")
 
