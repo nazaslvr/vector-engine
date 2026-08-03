@@ -36,31 +36,30 @@ async def generate_preview(file: UploadFile = File(...)):
     contents = await file.read()
 
     try:
-        # Wrap raw bytes as a file-like object for Replicate file upload
-        image_file = io.BytesIO(contents)
-
-        # Run SDXL image-to-image synthesis using stable model reference
+        # Pass file bytes stream to SDXL img2img model with full version reference
+        image_stream = io.BytesIO(contents)
+        
         output = replicate.run(
-            "stability-ai/sdxl",
+            "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
             input={
-                "image": image_file,
+                "image": image_stream,
                 "prompt": AI_PROMPT,
                 "negative_prompt": NEGATIVE_PROMPT,
                 "prompt_strength": 0.65,
-                "num_inference_steps": 30,
-                "guidance_scale": 9.0
+                "num_inference_steps": 25,
+                "guidance_scale": 7.5
             }
         )
 
-        # Retrieve generated image URL
         if isinstance(output, list) and len(output) > 0:
             generated_url = str(output[0])
         else:
-            raise HTTPException(status_code=500, detail="AI model did not return an image.")
+            raise HTTPException(status_code=500, detail="AI model returned empty output.")
 
-        # Download the AI generated flat artwork and return bytes
         img_resp = requests.get(generated_url)
         return Response(content=img_resp.content, media_type="image/png")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Generation Failed: {str(e)}")
+        # Return exact exception string so Toast shows the exact API reason
+        err_msg = str(e).replace('"', "'")
+        raise HTTPException(status_code=500, detail=f"Replicate Error: {err_msg}")
