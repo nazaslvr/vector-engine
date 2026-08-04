@@ -6,4 +6,6 @@ requests
 replicate
 pillow
 python-multipart
-fal-client
+ultralytics
+ezdxf
+potrace
